@@ -43,7 +43,7 @@ that history and does not add to it.
 
 | Question                    | Decision                                                         | Example or reason                                                            |
 |-----------------------------|------------------------------------------------------------------|------------------------------------------------------------------------------|
-| Capitalization              | Ignore case, locale-independent one-to-one folding               | `Listen` matches `silent`; no Turkish dotted-I surprise                      |
+| Capitalization              | Ignore case, locale-independent one-to-one folding               | `Listen` matches `silent`; behavior does not depend on the host locale       |
 | Whitespace and punctuation  | Ignore                                                           | `Dormitory` matches `Dirty room!!`                                           |
 | Digits, symbols, emoji      | Ignore; they are not letters                                     | `abc1` and `abc2` are the same word                                          |
 | Unicode spelling            | NFC, so canonically equivalent spellings agree                   | composed `é` equals decomposed `e` + accent                                  |
@@ -74,7 +74,7 @@ CLI -> Application -> Domain
 
 - The rule lives in `NormalizedText.relationTo`; `AnagramService` only validates, stores, returns.
 - Public: `AnagramService`, `ComparisonResult`, `InvalidTextException`, `main`. Everything else internal.
-- No repository interface: history has one implementation, and the task forbids persistence.
+- No repository interface: the task needs only one process-local implementation.
 
 ## Data structures
 
@@ -133,20 +133,20 @@ turn a base character into a combining mark, so cluster boundaries do not move.
 - Letters join with a space in the canonical form: a space is always its own cluster and never sits
   inside a letter, so the joined form is unambiguous.
 
-## Cost
+## Performance
 
-`n` clusters in an input, `u` distinct letters, `b` texts in the matching group, `k` matches.
+`n` is the length of an input, `b` the number of texts already stored under the same signature, and
+`k` the number of matches returned.
 
-| Operation                     | Time                                    | Extra space  |
-|-------------------------------|-----------------------------------------|--------------|
-| Normalize and build signature | O(n)                                    | O(n + u)     |
-| Feature 1                     | O(n1 + n2)                              | O(n1 + n2)   |
-| Signature lookup              | O(u) to hash, then O(1) average         | -            |
-| Feature 2                     | O(n + b)                                | O(n + k)     |
-| Duplicate insertion           | O(1) average                            | O(1)         |
+| Operation                                | Expected time                                  |
+|------------------------------------------|------------------------------------------------|
+| Normalize a text and build its signature | O(n)                                           |
+| Feature 1                                | O(n) over the two inputs                       |
+| Feature 2                                | O(n) to normalize, then O(b + k) over one group |
 
-Feature 2 scans its group because the query's spellings must be excluded; other groups are untouched.
-`AnagramSignature` caches its hash code, since a map recomputes its own on every lookup.
+Counting graphemes is O(n); sorting them into a signature would be O(n log n). Grouping history by
+signature is what keeps Feature 2 from scanning unrelated inputs. `AnagramSignature` caches its hash
+code because it exists to be a map key.
 
 ## Rejected alternatives
 
@@ -155,15 +155,16 @@ Feature 2 scans its group because the query's spellings must be excluded; other 
 | Sorted canonical signature      | O(n log n) rather than O(n), and sorting clusters needs a total order where counting needs only equality |
 | Fixed ASCII frequency array     | Does not handle non-ASCII letters                                               |
 | Flat history list               | Every query would scan unrelated inputs                                         |
-| Group history by canonical form | Search becomes O(k) rather than O(b), but returns group order, not first-seen    |
+| Group history by canonical form | Skips same-word entries quickly, but loses interleaved first-seen order without another index |
 | Persist history                 | The task says one execution                                                     |
 | Repository or policy interfaces | History has one implementation                                                  |
 | Spring Boot or Ktor             | The task asks for an interactive program, not an HTTP service                   |
+| Coroutines or parallel streams  | Work is small, CPU-bound and sequential; coordination would cost more than it saves |
 | Deployment workflow             | Nothing to deploy; the repository needs CI only                                 |
 
 ## Tests
 
-52 tests, against the public and internal APIs rather than internals, so the implementation stays free to change.
+Tests cover behavior at each package boundary without inspecting private fields.
 
 - Domain: letter counts, order, case folding, ignored content, NFC, diacritics, non-Latin text, invalid input.
 - Application: the worked example verbatim, every outcome, atomic validation, deduplication, ordering
